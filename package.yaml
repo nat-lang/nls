@@ -24,7 +24,9 @@ dependencies:
   - lsp
   - text
   - nat
+  - megaparsec
   - unliftio
+  - containers
 
 ghc-options:
   - -Wall
