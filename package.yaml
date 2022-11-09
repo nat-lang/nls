@@ -20,13 +20,21 @@ extra-source-files:
 description: Please see the README on GitHub at <https://github.com/githubuser/nls#readme>
 
 dependencies:
-  - base >= 4.7 && < 5
-  - lsp
-  - text
   - nat
+
+  - base >= 4.7 && < 5
+  - text
+  - prettyprinter
+  - containers
+  - lsp
+
   - megaparsec
   - unliftio
-  - containers
+
+  - co-log-core
+  - stm
+  - lens
+  - aeson
 
 ghc-options:
   - -Wall
