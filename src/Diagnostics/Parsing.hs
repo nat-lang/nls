@@ -7,7 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeInType #-}
 
-module Diagnostics where
+module Diagnostics.Parsing where
 
 import Control.Monad.IO.Class (liftIO)
 import Data.List (intercalate)
@@ -17,6 +17,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Void
 import Data.Word
+import Diagnostics.Diagnose
 import Language.LSP.Server
 import qualified Language.LSP.Types as J
 import Language.LSP.VFS
@@ -25,12 +26,7 @@ import Nat.Parser
 import Nat.Syntax.Module
 import qualified Text.Megaparsec as P
 
-serverName = "nls"
-
 type Position = (J.UInt, J.UInt)
-
-class Diagnosable a where
-  diagnose :: J.Range -> a -> LspM () J.Diagnostic
 
 errPosition :: P.PosState s -> Position
 errPosition (P.PosState _ _ (P.SourcePos _ line col) _ _) = (pos line, pos col)
@@ -78,29 +74,11 @@ instance Diagnosable (P.ParseError T.Text Void) where
         P.TrivialError _ (Just unexpected) _ -> length (show unexpected)
         _ -> 0
 
-diagnoseBundle :: P.ParseErrorBundle T.Text Void -> LspM () [J.Diagnostic]
-diagnoseBundle (P.ParseErrorBundle (e :| es) state) = mapM diagnose' (e : es)
+diagnoseErrBundle :: P.ParseErrorBundle T.Text Void -> LspM () [J.Diagnostic]
+diagnoseErrBundle (P.ParseErrorBundle (e :| es) state) = mapM diagnose' (e : es)
   where
     (_, state') = P.reachOffset (errOffset e) state
     (linePos, colPos) = errPosition state'
     linePos' = linePos - 1 -- megaparsec is 0-based, lsp 1-based
     range = J.mkRange linePos' 0 linePos' colPos
     diagnose' = diagnose range
-
-diagnoseModuleParse :: Either (P.ParseErrorBundle T.Text Void) Module -> LspM () [J.Diagnostic]
-diagnoseModuleParse = \case
-  Left errBundle -> diagnoseBundle errBundle
-  Right mod -> return [success]
-    where
-      success =
-        J.Diagnostic
-          (J.mkRange 0 0 0 1)
-          (Just J.DsInfo)
-          Nothing
-          (Just serverName)
-          (T.pack $ show mod)
-          Nothing
-          (Just (J.List []))
-
-diagnoseDoc :: T.Text -> LspM () [J.Diagnostic]
-diagnoseDoc = diagnoseModuleParse . runPModule

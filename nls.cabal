@@ -25,7 +25,10 @@ source-repository head
 
 library
   exposed-modules:
-      Diagnostics
+      Diagnostics.Diagnose
+      Diagnostics.Document
+      Diagnostics.Parsing
+      Diagnostics.Typing
       Lib
       Reactor
   other-modules:

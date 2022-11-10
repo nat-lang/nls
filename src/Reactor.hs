@@ -39,7 +39,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TiO
 import Data.Text.Prettyprint.Doc
 import Data.Word
-import Diagnostics
+import Diagnostics.Document
 import GHC.Generics (Generic)
 import Language.LSP.Diagnostics
 import Language.LSP.Logging (defaultClientLogger)
