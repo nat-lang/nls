@@ -71,14 +71,14 @@ run = flip E.catches handlers $ do
       -- 3. To both
       stderrLogger :: LogAction IO (WithSeverity T.Text)
       stderrLogger = L.cmap show L.logStringStderr
-      clientLogger :: LogAction (LspM Config) (WithSeverity T.Text)
+      clientLogger :: LogAction (LspM ()) (WithSeverity T.Text)
       clientLogger = defaultClientLogger
-      dualLogger :: LogAction (LspM Config) (WithSeverity T.Text)
+      dualLogger :: LogAction (LspM ()) (WithSeverity T.Text)
       dualLogger = clientLogger <> L.hoistLogAction liftIO stderrLogger
 
       serverDefinition =
         ServerDefinition
-          { defaultConfig = Config {enabled = True, options = Map.empty},
+          { defaultConfig = (),
             onConfigurationChange = \_old v -> do
               case J.fromJSON v of
                 J.Error e -> Left (T.pack e)
@@ -122,7 +122,7 @@ lspOptions :: Options
 lspOptions =
   defaultOptions
     { textDocumentSync = Just syncOptions,
-      executeCommandCommands = Just ["lsp-hello-command"]
+      executeCommandCommands = Just []
     }
 
 -- ---------------------------------------------------------------------
@@ -137,13 +137,23 @@ normalizedUriToFilePath = fromJust . J.uriToFilePath . J.fromNormalizedUri
 
 -- | Analyze the file and send any diagnostics to the client in a
 -- "textDocument/publishDiagnostics" notification
-sendDiagnostics :: J.NormalizedUri -> Maybe Int32 -> LspM Config ()
-sendDiagnostics fileUri version = do
-  doc <- liftIO $ TiO.readFile (normalizedUriToFilePath fileUri)
-  let diags = [diagnose doc]
+sendDiagnostics :: J.NormalizedUri -> T.Text -> Maybe Int32 -> LspM () ()
+sendDiagnostics uri doc version = do
+  diags <- diagnoseDoc doc
   sendNotification J.SWindowShowMessage $
-    J.ShowMessageParams J.MtInfo "Foofoo"
-  publishDiagnostics 100 fileUri version (partitionBySource diags)
+    J.ShowMessageParams J.MtInfo (T.pack $ show diags)
+  publishDiagnostics 100 uri version (partitionBySource diags)
+
+sendFileDiagnostics :: J.NormalizedUri -> Maybe Int32 -> LspM () ()
+sendFileDiagnostics uri version = do
+  doc <- liftIO $ TiO.readFile (normalizedUriToFilePath uri)
+  sendDiagnostics uri doc version
+
+sendVirtualFileDiagnostics :: J.NormalizedUri -> VirtualFile -> LspM () ()
+sendVirtualFileDiagnostics uri vf = do
+  let doc = virtualFileText vf
+      version = virtualFileVersion vf
+  sendDiagnostics uri doc (Just version)
 
 -- ---------------------------------------------------------------------
 
@@ -159,77 +169,47 @@ reactor logger inp = do
 
 -- | Check if we have a handler, and if we create a haskell-lsp handler to pass it as
 -- input into the reactor
-lspHandlers :: (m ~ LspM Config) => L.LogAction m (WithSeverity T.Text) -> TChan ReactorInput -> Handlers m
+lspHandlers :: (m ~ LspM ()) => L.LogAction m (WithSeverity T.Text) -> TChan ReactorInput -> Handlers m
 lspHandlers logger rin = mapHandlers goReq goNot (handle logger)
   where
-    goReq :: forall (a :: J.Method J.FromClient J.Request). Handler (LspM Config) a -> Handler (LspM Config) a
+    goReq :: forall (a :: J.Method J.FromClient J.Request). Handler (LspM ()) a -> Handler (LspM ()) a
     goReq f = \msg k -> do
       env <- getLspEnv
       liftIO $ atomically $ writeTChan rin $ ReactorAction (runLspT env $ f msg k)
 
-    goNot :: forall (a :: J.Method J.FromClient J.Notification). Handler (LspM Config) a -> Handler (LspM Config) a
+    goNot :: forall (a :: J.Method J.FromClient J.Notification). Handler (LspM ()) a -> Handler (LspM ()) a
     goNot f = \msg -> do
       env <- getLspEnv
       liftIO $ atomically $ writeTChan rin $ ReactorAction (runLspT env $ f msg)
 
 -- | Where the actual logic resides for handling requests and notifications.
-handle :: (m ~ LspM Config) => L.LogAction m (WithSeverity T.Text) -> Handlers m
+handle :: (m ~ LspM ()) => L.LogAction m (WithSeverity T.Text) -> Handlers m
 handle logger =
   mconcat
-    [ notificationHandler J.SInitialized $ \_msg -> do
-        logger <& "Processing the Initialized notification" `WithSeverity` Info
-
-        -- We're initialized! Lets send a showMessageRequest now
-        let params =
-              J.ShowMessageRequestParams
-                J.MtWarning
-                "What's your favourite language extension?"
-                (Just [J.MessageActionItem "Rank2Types", J.MessageActionItem "NPlusKPatterns"])
-
-        void $
-          sendRequest J.SWindowShowMessageRequest params $ \case
-            Left e -> logger <& ("Got an error: " <> T.pack (show e)) `WithSeverity` Error
-            Right _ -> do
-              sendNotification J.SWindowShowMessage (J.ShowMessageParams J.MtInfo "Excellent choice")
-
-              -- We can dynamically register a capability once the user accepts it
-              sendNotification J.SWindowShowMessage (J.ShowMessageParams J.MtInfo "Turning on code lenses dynamically")
-
-              let regOpts = J.CodeLensRegistrationOptions Nothing Nothing (Just False)
-
-              void $
-                registerCapability J.STextDocumentCodeLens regOpts $ \_req responder -> do
-                  logger <& "Processing a textDocument/codeLens request" `WithSeverity` Info
-                  let cmd = J.Command "Say hello" "lsp-hello-command" Nothing
-                      rsp = J.List [J.CodeLens (J.mkRange 0 0 0 100) (Just cmd) Nothing]
-                  responder (Right rsp),
+    [ notificationHandler J.SInitialized $ \_msg ->
+        logger <& "Processing the Initialized notification" `WithSeverity` Info,
       notificationHandler J.STextDocumentDidOpen $ \msg -> do
         let doc = msg ^. J.params . J.textDocument . J.uri
             fileName = J.uriToFilePath doc
         logger <& ("Processing DidOpenTextDocument for: " <> T.pack (show fileName)) `WithSeverity` Info
-        sendDiagnostics (J.toNormalizedUri doc) (Just 0),
-      -- notificationHandler J.SWorkspaceDidChangeConfiguration $ \msg -> do
-      --   cfg <- getConfig
-      --   logger L.<& ("Configuration changed: " <> T.pack (show (msg, cfg))) `WithSeverity` Info,
+        sendFileDiagnostics (J.toNormalizedUri doc) (Just 0),
+      notificationHandler J.SWorkspaceDidChangeConfiguration $ \msg -> do
+        logger L.<& ("Configuration changed: " <> T.pack (show msg)) `WithSeverity` Info,
       notificationHandler J.STextDocumentDidChange $ \msg -> do
-        let doc =
-              msg
-                ^. J.params
-                  . J.textDocument
-                  . J.uri
-                  . to J.toNormalizedUri
-        logger <& ("Processing DidChangeTextDocument for: " <> T.pack (show doc)) `WithSeverity` Info
-        mdoc <- getVirtualFile doc
+        let uri = msg ^. J.params . J.textDocument . J.uri . to J.toNormalizedUri
+        logger <& ("Processing DidChangeTextDocument for: " <> T.pack (show uri)) `WithSeverity` Info
+        mdoc <- getVirtualFile uri
         case mdoc of
-          Just (VirtualFile _version str _) -> do
+          Just vf@(VirtualFile _version str _) -> do
             logger <& ("Found the virtual file: " <> T.pack (show str)) `WithSeverity` Info
+            sendVirtualFileDiagnostics uri vf
           Nothing -> do
-            logger <& ("Didn't find anything in the VFS for: " <> T.pack (show doc)) `WithSeverity` Info,
+            logger <& ("Didn't find anything in the VFS for: " <> T.pack (show uri)) `WithSeverity` Info,
       notificationHandler J.STextDocumentDidSave $ \msg -> do
         let doc = msg ^. J.params . J.textDocument . J.uri
             fileName = J.uriToFilePath doc
         logger <& ("Processing DidSaveTextDocument  for: " <> T.pack (show fileName)) `WithSeverity` Info
-        sendDiagnostics (J.toNormalizedUri doc) Nothing,
+        sendFileDiagnostics (J.toNormalizedUri doc) Nothing,
       requestHandler J.STextDocumentRename $ \req responder -> do
         logger <& "Processing a textDocument/rename request" `WithSeverity` Info
         let params = req ^. J.params
@@ -257,27 +237,8 @@ handle logger =
             sym = J.SymbolInformation "lsp-hello" J.SkFunction Nothing Nothing loc Nothing
             rsp = J.InR (J.List [sym])
         responder (Right rsp),
-      requestHandler J.STextDocumentCodeAction $ \req responder -> do
-        logger <& "Processing a textDocument/codeAction request" `WithSeverity` Info
-        let params = req ^. J.params
-            doc = params ^. J.textDocument
-            (J.List diags) = params ^. J.context . J.diagnostics
-            -- makeCommand only generates commands for diagnostics whose source is us
-            makeCommand (J.Diagnostic (J.Range s _) _s _c (Just "lsp-hello") _m _t _l) = [J.Command title cmd cmdparams]
-              where
-                title = "Apply LSP hello command:" <> head (T.lines _m)
-                -- NOTE: the cmd needs to be registered via the InitializeResponse message. See lspOptions above
-                cmd = "lsp-hello-command"
-                -- need 'file' and 'start_pos'
-                args =
-                  J.List
-                    [ J.object [("file", J.object [("textDocument", J.toJSON doc)])],
-                      J.object [("start_pos", J.object [("position", J.toJSON s)])]
-                    ]
-                cmdparams = Just args
-            makeCommand (J.Diagnostic _r _s _c _source _m _t _l) = []
-            rsp = J.List $ map J.InL $ concatMap makeCommand diags
-        responder (Right rsp),
+      requestHandler J.STextDocumentCodeAction $ \req responder ->
+        logger <& "Processing a textDocument/codeAction request" `WithSeverity` Info,
       requestHandler J.SWorkspaceExecuteCommand $ \req responder -> do
         logger <& "Processing a workspace/executeCommand request" `WithSeverity` Info
         let params = req ^. J.params

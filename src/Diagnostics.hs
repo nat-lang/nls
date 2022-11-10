@@ -9,11 +9,17 @@
 
 module Diagnostics where
 
+import Control.Monad.IO.Class (liftIO)
+import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty (..), toList)
+import Data.Maybe (fromJust)
 import qualified Data.Set as Set
 import qualified Data.Text as T
+import Data.Void
 import Data.Word
+import Language.LSP.Server
 import qualified Language.LSP.Types as J
+import Language.LSP.VFS
 import Nat.Evaluation.Module
 import Nat.Parser
 import Nat.Syntax.Module
@@ -21,49 +27,80 @@ import qualified Text.Megaparsec as P
 
 serverName = "nls"
 
-class Diagnosable a where
-  diagnose :: a -> J.Diagnostic
+type Position = (J.UInt, J.UInt)
 
-errPosition :: P.PosState s -> (J.UInt, J.UInt)
+class Diagnosable a where
+  diagnose :: J.Range -> a -> LspM () J.Diagnostic
+
+errPosition :: P.PosState s -> Position
 errPosition (P.PosState _ _ (P.SourcePos _ line col) _ _) = (pos line, pos col)
   where
     pos :: P.Pos -> J.UInt
     pos = fromIntegral . P.unPos
 
-errTokens :: P.ParseError T.Text e -> (T.Text, [T.Text])
-errTokens (P.TrivialError _ mUnexpected expected) = (maybe (T.pack "") toStr mUnexpected, expected')
+join sep = foldl1 (\x y -> x ++ sep ++ y)
+
+pJoin sep = T.pack . join sep
+
+packErr :: P.ParseError T.Text Void -> T.Text
+packErr (P.TrivialError _ mUnexpected expected) = T.pack $ case mUnexpected of
+  Nothing -> ""
+  Just unexpected -> concat ["Expecting one of: ", expected', ". Got: ", showErrItem unexpected]
   where
-    toStr (P.Tokens ts) = T.pack (toList ts)
-    expected' = fmap toStr (Set.toList expected)
+    expected' = intercalate " | " (fmap showErrItem (Set.toList expected))
+    showErrItem item = case item of
+      P.Tokens (x :| xs) -> x : xs
+      P.Label (c :| cs) -> c : cs
+      P.EndOfInput -> "EOF"
+packErr (P.FancyError _ errors) = pJoin " " (showErr <$> Set.toList errors)
+  where
+    showErr e = case e of
+      P.ErrorFail msg -> msg
+      P.ErrorIndentation ord p0 p1 -> join " " [show p0, show ord, show p1]
 
-instance Diagnosable (P.ParseErrorBundle T.Text e) where
-  diagnose (P.ParseErrorBundle (err :| _) state) =
-    J.Diagnostic
-      range
-      (Just J.DsError)
-      (Just (J.InL 42))
-      (Just serverName)
-      (T.pack $ "Unexpected: " ++ show unexpected ++ ". Expecting one of: " ++ show expected)
-      Nothing
-      Nothing
-    where
-      (line, col) = errPosition state
-      range = J.mkRange line col line (col + unexpectedLen)
-      unexpectedLen = fromIntegral $ T.length unexpected
-      (unexpected, expected) = errTokens err
+errOffset = \case
+  P.TrivialError o _ _ -> o
+  P.FancyError o _ -> o
 
-instance Diagnosable (Either (P.ParseErrorBundle T.Text e) a) where
-  diagnose = \case
-    Left err -> diagnose err
-    Right {} ->
+instance Diagnosable (P.ParseError T.Text Void) where
+  diagnose range e =
+    return $
       J.Diagnostic
-        (J.mkRange 0 0 0 1)
-        (Just J.DsInfo)
-        Nothing
+        range
+        (Just J.DsError)
+        (Just (J.InL 42))
         (Just serverName)
-        "Ok."
+        (packErr e)
         Nothing
-        (Just (J.List []))
+        Nothing
+    where
+      offset = fromIntegral $ case e of
+        P.TrivialError _ (Just unexpected) _ -> length (show unexpected)
+        _ -> 0
 
-instance Diagnosable T.Text where
-  diagnose = diagnose . runPModule
+diagnoseBundle :: P.ParseErrorBundle T.Text Void -> LspM () [J.Diagnostic]
+diagnoseBundle (P.ParseErrorBundle (e :| es) state) = mapM diagnose' (e : es)
+  where
+    (_, state') = P.reachOffset (errOffset e) state
+    (linePos, colPos) = errPosition state'
+    linePos' = linePos - 1 -- megaparsec is 0-based, lsp 1-based
+    range = J.mkRange linePos' 0 linePos' colPos
+    diagnose' = diagnose range
+
+diagnoseModuleParse :: Either (P.ParseErrorBundle T.Text Void) Module -> LspM () [J.Diagnostic]
+diagnoseModuleParse = \case
+  Left errBundle -> diagnoseBundle errBundle
+  Right mod -> return [success]
+    where
+      success =
+        J.Diagnostic
+          (J.mkRange 0 0 0 1)
+          (Just J.DsInfo)
+          Nothing
+          (Just serverName)
+          (T.pack $ show mod)
+          Nothing
+          (Just (J.List []))
+
+diagnoseDoc :: T.Text -> LspM () [J.Diagnostic]
+diagnoseDoc = diagnoseModuleParse . runPModule
