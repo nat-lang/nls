@@ -1,5 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-
 module Diagnostics.Document where
 
 import qualified Data.Text as T

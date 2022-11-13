@@ -250,7 +250,9 @@ handle logger =
           withProgress "Executing some long running command" Cancellable $ \update ->
             forM [(0 :: J.UInt) .. 10] $ \i -> do
               update (ProgressAmount (Just (i * 10)) (Just "Doing stuff"))
-              liftIO $ threadDelay (1 * 1000000)
+              liftIO $ threadDelay (1 * 1000000),
+      notificationHandler J.SCancelRequest $ \_msg -> do
+        logger <& ("Received a request to cancel: " <> T.pack (show _msg)) `WithSeverity` Debug
     ]
 
 -- ---------------------------------------------------------------------
