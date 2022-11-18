@@ -42,9 +42,10 @@ renderDocument logger uri doc = do
 
     handle :: ExitCode -> LspM () ()
     handle exitCode = case exitCode of
-      ExitFailure code -> logger <& ("Unexpected error while rendering " <> tFile <> ": errno " <> T.pack (show code)) `WithSeverity` Error
+      ExitFailure code ->
+        logger <& ("Unexpected error while rendering " <> tFile <> ": errno " <> T.pack (show code)) `WithSeverity` Error
       ExitSuccess -> do
-        logger <& ("Completed rendering: " <> tFile) `WithSeverity` Info
+        logger <& ("Completed rendering: " <> T.pack (show pdfUri)) `WithSeverity` Info
         let params = J.ShowDocumentParams pdfUri Nothing Nothing Nothing
         void $
           sendRequest J.SWindowShowDocument params $ \case
