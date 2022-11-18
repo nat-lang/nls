@@ -36,6 +36,9 @@ dependencies:
   - lens
   - aeson
 
+  - filepath
+  - process
+
 ghc-options:
   - -Wall
   - -Wcompat

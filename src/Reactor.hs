@@ -32,9 +32,10 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.STM
 import qualified Data.Aeson as J
+import Data.Foldable (find)
 import Data.Int (Int32)
 import qualified Data.Map as Map
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, fromMaybe, isJust)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TiO
 import Data.Text.Prettyprint.Doc
@@ -47,6 +48,8 @@ import Language.LSP.Server
 import qualified Language.LSP.Types as J
 import qualified Language.LSP.Types.Lens as J
 import Language.LSP.VFS
+import Lib (normalizedUriToFilePath)
+import Render
 import System.Exit
 import System.IO
 
@@ -133,15 +136,11 @@ lspOptions =
 
 newtype ReactorInput = ReactorAction (IO ())
 
-normalizedUriToFilePath = fromJust . J.uriToFilePath . J.fromNormalizedUri
-
 -- | Analyze the file and send any diagnostics to the client in a
 -- "textDocument/publishDiagnostics" notification
 sendDiagnostics :: J.NormalizedUri -> T.Text -> Maybe Int32 -> LspM () ()
 sendDiagnostics uri doc version = do
   diags <- diagnoseDoc doc
-  sendNotification J.SWindowShowMessage $
-    J.ShowMessageParams J.MtInfo (T.pack $ show diags)
   publishDiagnostics 100 uri version (partitionBySource diags)
 
 sendFileDiagnostics :: J.NormalizedUri -> Maybe Int32 -> LspM () ()
@@ -167,26 +166,29 @@ reactor logger inp = do
     ReactorAction act <- atomically $ readTChan inp
     act
 
--- | Check if we have a handler, and if we create a haskell-lsp handler to pass it as
+-- | Check if we have a handler, and if we do, create a haskell-lsp handler to pass it as
 -- input into the reactor
 lspHandlers :: (m ~ LspM ()) => L.LogAction m (WithSeverity T.Text) -> TChan ReactorInput -> Handlers m
 lspHandlers logger rin = mapHandlers goReq goNot (handle logger)
   where
+    run :: IO () -> LspT () IO ()
+    run = liftIO . atomically . writeTChan rin . ReactorAction
+
     goReq :: forall (a :: J.Method J.FromClient J.Request). Handler (LspM ()) a -> Handler (LspM ()) a
-    goReq f = \msg k -> do
+    goReq f msg k = do
       env <- getLspEnv
-      liftIO $ atomically $ writeTChan rin $ ReactorAction (runLspT env $ f msg k)
+      run (runLspT env $ f msg k)
 
     goNot :: forall (a :: J.Method J.FromClient J.Notification). Handler (LspM ()) a -> Handler (LspM ()) a
-    goNot f = \msg -> do
+    goNot f msg = do
       env <- getLspEnv
-      liftIO $ atomically $ writeTChan rin $ ReactorAction (runLspT env $ f msg)
+      run (runLspT env $ f msg)
 
 -- | Where the actual logic resides for handling requests and notifications.
 handle :: (m ~ LspM ()) => L.LogAction m (WithSeverity T.Text) -> Handlers m
 handle logger =
   mconcat
-    [ notificationHandler J.SInitialized $ \_msg ->
+    [ notificationHandler J.SInitialized $ \_msg -> do
         logger <& "Processing the Initialized notification" `WithSeverity` Info,
       notificationHandler J.STextDocumentDidOpen $ \msg -> do
         let doc = msg ^. J.params . J.textDocument . J.uri
@@ -197,12 +199,15 @@ handle logger =
         logger L.<& ("Configuration changed: " <> T.pack (show msg)) `WithSeverity` Info,
       notificationHandler J.STextDocumentDidChange $ \msg -> do
         let uri = msg ^. J.params . J.textDocument . J.uri . to J.toNormalizedUri
-        logger <& ("Processing DidChangeTextDocument for: " <> T.pack (show uri)) `WithSeverity` Info
+            tUri = T.pack (show uri)
+        logger <& ("Processing DidChangeTextDocument for: " <> tUri) `WithSeverity` Info
         mdoc <- getVirtualFile uri
         case mdoc of
-          Just vf@(VirtualFile _version str _) -> do
-            logger <& ("Found the virtual file: " <> T.pack (show str)) `WithSeverity` Info
+          Just vf@(VirtualFile version _ _) -> do
+            let versionedUri = tUri <> T.pack (show version)
+            logger <& ("Found the virtual file: " <> versionedUri) `WithSeverity` Info
             sendVirtualFileDiagnostics uri vf
+            renderDocument logger uri (virtualFileText vf)
           Nothing -> do
             logger <& ("Didn't find anything in the VFS for: " <> T.pack (show uri)) `WithSeverity` Info,
       notificationHandler J.STextDocumentDidSave $ \msg -> do
@@ -237,20 +242,15 @@ handle logger =
             sym = J.SymbolInformation "lsp-hello" J.SkFunction Nothing Nothing loc Nothing
             rsp = J.InR (J.List [sym])
         responder (Right rsp),
-      requestHandler J.STextDocumentCodeAction $ \req responder ->
-        logger <& "Processing a textDocument/codeAction request" `WithSeverity` Info,
-      requestHandler J.SWorkspaceExecuteCommand $ \req responder -> do
-        logger <& "Processing a workspace/executeCommand request" `WithSeverity` Info
+      requestHandler J.STextDocumentCodeAction $ \req responder -> do
         let params = req ^. J.params
-            margs = params ^. J.arguments
+            uri = params ^. J.textDocument . J.uri
+            action = params ^. J.context . J.only
 
-        logger <& ("The arguments are: " <> T.pack (show margs)) `WithSeverity` Debug
-        responder (Right (J.Object mempty)) -- respond to the request
-        void $
-          withProgress "Executing some long running command" Cancellable $ \update ->
-            forM [(0 :: J.UInt) .. 10] $ \i -> do
-              update (ProgressAmount (Just (i * 10)) (Just "Doing stuff"))
-              liftIO $ threadDelay (1 * 1000000),
+        logger <& T.pack ("Processing a textDocument/codeAction request: " ++ show params) `WithSeverity` Info,
+      requestHandler J.SWorkspaceExecuteCommand $ \req responder -> do
+        let cmd = req ^. J.params . J.command
+        logger <& ("Processing a workspace/executeCommand request: " <> T.pack (show cmd)) `WithSeverity` Info,
       notificationHandler J.SCancelRequest $ \_msg -> do
         logger <& ("Received a request to cancel: " <> T.pack (show _msg)) `WithSeverity` Debug
     ]

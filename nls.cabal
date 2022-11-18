@@ -31,6 +31,7 @@ library
       Diagnostics.Typing
       Lib
       Reactor
+      Render
   other-modules:
       Paths_nls
   hs-source-dirs:
@@ -41,11 +42,13 @@ library
     , base >=4.7 && <5
     , co-log-core
     , containers
+    , filepath
     , lens
     , lsp
     , megaparsec
     , nat
     , prettyprinter
+    , process
     , stm
     , text
     , unliftio
@@ -63,12 +66,14 @@ executable nls
     , base >=4.7 && <5
     , co-log-core
     , containers
+    , filepath
     , lens
     , lsp
     , megaparsec
     , nat
     , nls
     , prettyprinter
+    , process
     , stm
     , text
     , unliftio
@@ -87,12 +92,14 @@ test-suite nls-test
     , base >=4.7 && <5
     , co-log-core
     , containers
+    , filepath
     , lens
     , lsp
     , megaparsec
     , nat
     , nls
     , prettyprinter
+    , process
     , stm
     , text
     , unliftio

@@ -11,8 +11,6 @@ import qualified Nat.Syntax.Module as S
 diagnoseDoc :: T.Text -> LspM () [J.Diagnostic]
 diagnoseDoc doc = case S.runPModule doc of
   Left errBundle -> diagnoseErrBundle errBundle
-  Right mod -> do
-    let eTypeEnv = E.typeMod' mod 0
-    case eTypeEnv of
-      Left err -> diagnoseTyErr err
-      Right {} -> return []
+  Right mod -> case E.typeMod' mod 0 of
+    Left err -> diagnoseTyErr err
+    Right {} -> return []
