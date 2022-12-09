@@ -5,6 +5,17 @@
 
 packages:
 - completed:
+    commit: f46193928e8f2cf74839a2c16fe664b049ad851a
+    git: https://github.com/nat-lang/nat.git
+    name: nat
+    pantry-tree:
+      sha256: e204fed7b9d400d612dda0f3b28bc4c03466d19715d376b1191b1ceaa4f52527
+      size: 2268
+    version: 0.1.0.0
+  original:
+    commit: f46193928e8f2cf74839a2c16fe664b049ad851a
+    git: https://github.com/nat-lang/nat.git
+- completed:
     hackage: binary-tree-0.1.0.0@sha256:ea4e5f636570eeaf27b5ba28a1adad252e5e4997063c7172c387c7574508815a,2846
     pantry-tree:
       sha256: 92581994d6fe0106cbb46c959a298e305d1ae54c7523d6b3893ba8525612686b
