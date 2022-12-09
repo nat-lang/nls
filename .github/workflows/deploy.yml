@@ -23,4 +23,4 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ secrets.ECR_REPOSITORY }}/${{ secrets.ECR_IMAGE }}:latest
+          tags: 721127801956.dkr.ecr.us-east-2.amazonaws.com/nls
